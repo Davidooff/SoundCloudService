@@ -18,14 +18,8 @@ async fn main() {
     let shared_state = Arc::new(SharedState{ soundcloud_api: Arc::new(SoundCloudApi::new("bARmVKz9fbjpOI0NItFozlgs3kKCmUlT")) });
 
     let app = Router::new()
-        .route("/track_data/{ids}", get({
-            let state = Arc::clone(&shared_state);
-            move |path| get_tracks_data(path, state)
-        }))
-        .route("/stream/{id}", get({
-            let state = Arc::clone(&shared_state);
-            move |path| get_stream(path, state)
-        })).with_state(shared_state);
+        .route("/track_data/{ids}", get(get_tracks_data))
+        .route("/chunks/{id}", get(get_stream)).with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();

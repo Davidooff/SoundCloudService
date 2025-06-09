@@ -104,7 +104,7 @@ impl SoundCloudApi {
 
     }
 
-    pub async fn stream_chunk(&self, url: &str) -> Result<ByteStream, Box<dyn Error>> {
+    pub async fn stream_chunk(&self, url: String) -> Result<ByteStream, Box<dyn Error>> {
         let response = self.client
             .get(url)
             .send()

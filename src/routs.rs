@@ -1,21 +1,26 @@
 use std::sync::Arc;
 use axum::body::Body;
-use axum::extract::{Path};
+use axum::extract::{Path, State};
 use axum::http::{header, Response, StatusCode};
 use axum::Json;
 use axum::response::IntoResponse;
 use futures::{TryFutureExt};
 use futures::StreamExt;
+use std::error::Error;
+use std::pin::Pin;
 use crate::{SharedState};
-use crate::soundcloud_api::ByteStream;
+use crate::soundcloud_api::{ByteStream, SoundCloudApi};
 
-pub async fn get_tracks_data(Path(ids): Path<String>, state: Arc<SharedState>) -> Result<impl IntoResponse, StatusCode> {
+#[axum::debug_handler]
+pub async fn get_tracks_data(Path(ids): Path<String>, State(state): State<Arc<SharedState>>) -> Result<impl IntoResponse, StatusCode> {
     let soundcloud = state.soundcloud_api.clone();
     let tracks_data = soundcloud.get_track_data(ids.as_str()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(tracks_data))
 }
 
-pub async fn get_stream(Path(id): Path<String>, state: Arc<SharedState>) -> Result<impl IntoResponse, StatusCode> {
+
+#[axum::debug_handler]
+pub async fn get_stream(Path(id): Path<String>, State(state): State<Arc<SharedState>>) -> Result<Response<Body>, StatusCode> {
     {
         let soundcloud = state.soundcloud_api.clone();
 
@@ -31,11 +36,15 @@ pub async fn get_stream(Path(id): Path<String>, state: Arc<SharedState>) -> Resu
         println!("{:?}", chunks);
 
         let mut final_stream: ByteStream = Box::pin(futures::stream::empty());
+        let mut chunk_query:Vec<Pin<Box<dyn Future<Output=Result<ByteStream, Box<dyn Error>>> + Send>>> = vec![];
 
         for chunk in chunks {
-            let chunk_stream = soundcloud.stream_chunk(chunk.as_str()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            final_stream = final_stream.chain(chunk_stream).boxed();
+            chunk_query.push(Box::pin(soundcloud.stream_chunk(chunk)));//.await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         };
+
+        for  chunk in chunk_query {
+            final_stream = final_stream.chain(chunk.await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?).boxed();
+        }
 
         let body = Body::from_stream(final_stream);
 
