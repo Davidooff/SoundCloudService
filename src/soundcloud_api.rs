@@ -1,9 +1,9 @@
 use std::error::Error;
 use std::pin::Pin;
-use reqwest::{Client, Url, Result as ReqResult};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use regex::Regex;
-use futures::{Stream, TryStreamExt, stream, StreamExt};
+use futures::{Stream, StreamExt};
 
 const BASE_URL: &str = "https://api-v2.soundcloud.com";
 
@@ -24,7 +24,6 @@ pub struct EncodingData {
     pub is_legacy_transcoding: bool,
 }
 
-
 #[derive(Deserialize, Serialize)]
 pub struct Media {
     pub transcodings: Vec<EncodingData>,
@@ -40,6 +39,7 @@ pub struct User {
 #[derive(Deserialize, Serialize)]
 pub struct TrackData {
     pub id: u32,
+    pub title: String,
     pub artwork_url:  String,
     pub duration: u32,
     pub media: Media,
@@ -47,6 +47,7 @@ pub struct TrackData {
     pub policy: String,
     pub user: User
 }
+
 
 #[derive(Deserialize, Serialize)]
 pub struct ChunkUrl {
@@ -62,10 +63,10 @@ pub struct SoundCloudApi {
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>;
 
 impl SoundCloudApi {
-    pub fn new(clinet_id: &str) -> Self {
+    pub fn new(client_id: &str) -> Self {
         Self {
             client: Client::new(),
-            client_id: String::from(clinet_id),
+            client_id: String::from(client_id),
             url_re: Regex::new(r#"https:?:[^\s"]+"#).unwrap()
         }
     }
@@ -75,10 +76,8 @@ impl SoundCloudApi {
             ("ids", ids), ("client_id", self.client_id.as_str()),
         ])?;
         let req = self.client.get(url).build()?;
-
         let res = self.client.execute(req).await?.text().await?;
-
-        println!("{}", res);
+        
         let track: Vec<TrackData> = serde_json::from_str(&res)?;
 
         Ok(track)
@@ -99,9 +98,8 @@ impl SoundCloudApi {
         let req = self.client.get(url).build()?;
         let res = self.client.execute(req).await?.text().await?;
         let urls: Vec<String> = self.url_re.find_iter(res.as_str()).map(|m| m.as_str().to_string()).collect();
-
+        
         Ok(urls)
-
     }
 
     pub async fn stream_chunk(&self, url: String) -> Result<ByteStream, Box<dyn Error>> {
