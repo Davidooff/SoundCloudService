@@ -18,5 +18,6 @@ futures = "0.3.31"
 bytes = "1.10.1"
 sqlx = { version = "0.7", features = [ "runtime-tokio-rustls", "postgres" ] }
 mongodb = "3.2.3"
+anyhow = "1.0.98"
 #sqlx-postgres = "0.8.6"
 #mongodb-gridfs = "*"

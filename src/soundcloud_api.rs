@@ -1,19 +1,20 @@
 use std::error::Error;
+use std::io::ErrorKind;
 use std::pin::Pin;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use regex::Regex;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 
 const BASE_URL: &str = "https://api-v2.soundcloud.com";
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct FormatData {
     pub protocol: String,
     pub mime_type: String
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct EncodingData {
     pub url: String,
     pub preset: String,
@@ -24,28 +25,44 @@ pub struct EncodingData {
     pub is_legacy_transcoding: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Media {
     pub transcodings: Vec<EncodingData>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct User {
     pub avatar_url: String,
     pub username: String,
-    pub id: u32,
+    pub id: i32,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct TrackData {
-    pub id: u32,
+    pub id: i32,
     pub title: String,
     pub artwork_url:  String,
-    pub duration: u32,
+    pub duration: i32,
     pub media: Media,
     pub track_authorization: String,
     pub policy: String,
     pub user: User
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct PlaylistData {
+    pub id: i32,
+    pub title: String,
+    pub artwork_url:  String,
+    pub duration: i32,
+    pub user: User,
+    pub tracks: Vec<TrackData>
+}
+
+#[derive(Deserialize, Serialize)]
+pub enum SearchItem {
+    Playlist(PlaylistData),
+    Track(TrackData),
 }
 
 
@@ -60,7 +77,8 @@ pub struct SoundCloudApi {
     url_re: Regex,
 }
 
-pub type ByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>;
+
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>>;
 
 impl SoundCloudApi {
     pub fn new(client_id: &str) -> Self {
@@ -69,6 +87,20 @@ impl SoundCloudApi {
             client_id: String::from(client_id),
             url_re: Regex::new(r#"https:?:[^\s"]+"#).unwrap()
         }
+    }
+
+    pub async fn search(&self, query: &str, offset: &str, limit: &str) -> Result<Vec<SearchItem>, Box<dyn Error>> {
+        let url = Url::parse_with_params(format!("{}/search", BASE_URL).as_str(), &[
+            ("q", query), ("client_id", self.client_id.as_str()),
+            ("limit", limit), ("offset", offset)
+        ])?;
+
+        let req = self.client.get(url).build()?;
+        let res = self.client.execute(req).await?.text().await?;
+
+        let search_res: Vec<SearchItem> = serde_json::from_str(&res)?;
+
+        Ok(search_res)
     }
 
     pub async fn get_track_data(&self, ids: &str) -> Result<Vec<TrackData>, Box<dyn Error>> {
@@ -102,12 +134,24 @@ impl SoundCloudApi {
         Ok(urls)
     }
 
-    pub async fn stream_chunk(&self, url: String) -> Result<ByteStream, Box<dyn Error>> {
+    pub async fn stream_chunk(&self, url: String) -> ByteStream {
+        // Use the ? operator to propagate errors instead of panicking.
+        // If send() fails, this function will immediately return an Err.
         let response = self.client
             .get(url)
             .send()
-            .await?;
+            .await.unwrap();
 
-        Ok(response.bytes_stream().boxed())
+
+        // The rest of your logic is good, just wrap the final stream in Ok().
+        // Note: The error in bytes_stream is reqwest::Error. We map it to io::Error
+        // to match the ByteStream definition.
+        let stream = response
+            .bytes_stream()
+            .map_err(|e| std::io::Error::new(ErrorKind::Other, e)) // A better mapping
+            .boxed();
+
+        // Wrap the successful result in Ok()
+        stream
     }
 }

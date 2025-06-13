@@ -110,19 +110,17 @@ $$;
 CREATE OR REPLACE PROCEDURE add_track(
   _track      track_input,
   _track_img  TEXT,
-  _author     author_input        
+  _author     author_input
 )
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  --insert author
-  INSERT INTO authors (id, title, img)
-    VALUES (_author.id, _author.title, _author.img)
+INSERT INTO authors (id, title, img)
+VALUES (_author.id, _author.title, _author.img)
     ON CONFLICT (id) DO NOTHING;
 
-  -- insert track
-  INSERT INTO tracks (id, title, duration, img, author_id)
-    VALUES (_track._id, _track._title, _track._duration, _track_img, _author.id)
+INSERT INTO tracks (id, title, duration, img, author_id)
+VALUES (_track.id, _track.title, _track.duration, _track_img, _author.id)
     ON CONFLICT (id) DO NOTHING;
 END;
 $$;

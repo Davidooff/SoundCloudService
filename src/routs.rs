@@ -1,27 +1,55 @@
+use std::convert::Infallible;
 use std::sync::Arc;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, Response, StatusCode};
 use axum::Json;
 use axum::response::IntoResponse;
-use futures::{TryFutureExt};
+use futures::{stream, Stream, TryFutureExt};
 use futures::StreamExt;
 use std::error::Error;
 use std::pin::Pin;
-use crate::{SharedState};
+use serde::Deserialize;
+use crate::{soundcloud_api, SharedState};
+use crate::postgres_service::{AuthorInput, TrackInput, TrackTblEntry};
 use crate::soundcloud_api::{ByteStream, SoundCloudApi};
+
+#[derive(Deserialize, Debug)]
+pub struct SearchParams {
+    q: String,
+    limit: String,
+    offset: String,
+}
+
+#[axum::debug_handler]
+pub async fn search(Query(params): Query<SearchParams>, State(state): State<Arc<SharedState>>) -> impl IntoResponse {
+    let soundcloud = state.soundcloud_api.clone();
+
+    let seach_res = soundcloud.search(&params.q, &params.offset, &params.limit).await;
+}
 
 #[axum::debug_handler]
 pub async fn get_tracks_data(Path(ids): Path<String>, State(state): State<Arc<SharedState>>) -> Result<impl IntoResponse, StatusCode> {
     let soundcloud = state.soundcloud_api.clone();
+    let postgre = state.postgres_db.clone();
+
+    // The original `get_track_data` is fine
     let tracks_data = soundcloud.get_track_data(ids.as_str()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for track in &tracks_data {
+        let ti = TrackInput::from(track);
+        let ai = AuthorInput::from(track);
+
+        // This call remains the same
+        postgre.add_track(&ti, &track.artwork_url, &ai).await.expect("failed to add track");
+    }
+
     Ok(Json(tracks_data))
 }
 
 
 #[axum::debug_handler]
 pub async fn get_stream(Path(id): Path<String>, State(state): State<Arc<SharedState>>) -> Result<Response<Body>, StatusCode> {
-    {
         let soundcloud = state.soundcloud_api.clone();
 
         let track_data = soundcloud.get_track_data(id.as_str()).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -35,18 +63,27 @@ pub async fn get_stream(Path(id): Path<String>, State(state): State<Arc<SharedSt
 
         println!("{:?}", chunks);
 
-        let mut final_stream: ByteStream = Box::pin(futures::stream::empty());
-        let mut chunk_query:Vec<Pin<Box<dyn Future<Output=Result<ByteStream, Box<dyn Error>>> + Send>>> = vec![];
+        let chunk_futures = stream::iter(chunks.into_iter())
+            .map(move |chunk_token| {
+                let sc = soundcloud.clone();
 
-        for chunk in chunks {
-            chunk_query.push(Box::pin(soundcloud.stream_chunk(chunk)));//.await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        };
+                async move {
+                    sc.stream_chunk(chunk_token).await
+                }
+            });
 
-        for  chunk in chunk_query {
-            final_stream = final_stream.chain(chunk.await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?).boxed();
-        }
 
-        let body = Body::from_stream(final_stream);
+        let max_concurrency = 1;
+        let combined_stream =
+            chunk_futures
+                // drive up to `max_concurrency` in parallel:
+                .buffered(max_concurrency)
+                // . Now each item is a ByteStream:
+                .flatten()
+                // box it so it fits the `Body::from_stream` signature:
+                .boxed();
+
+        let body = Body::from_stream(combined_stream);
 
         let response = Response::builder()
             .status(StatusCode::OK)
@@ -64,37 +101,4 @@ pub async fn get_stream(Path(id): Path<String>, State(state): State<Arc<SharedSt
 
         println!("Handler finished: Streaming response to client.");
         Ok(response)
-
-        //
-        //
-        //
-        // let stream_of_urls = stream::iter(chunks);
-        //
-        //
-        // let final_stream = stream_of_urls.then(move |chunk_url| {
-        //     // Clone soundcloud API handle for the closure
-        //     let soundcloud = soundcloud.clone();
-        //     async move {
-        //         println!("Preparing to stream chunk: {}", chunk_url);
-        //         soundcloud.stream_chunk(&chunk_url).await
-        //     }
-        // })
-        //     .flat_map(|result_of_stream| {
-        //         // `result_of_stream` is a Result<ByteStream, _>
-        //         // We convert it into a stream that can be flattened.
-        //         match result_of_stream {
-        //             Ok(stream) => stream.map(Ok).left_stream(), // `left_stream` helps unify types
-        //             Err(e) => {
-        //                 eprintln!("Error getting chunk stream: {:?}", e);
-        //                 // Create a stream that yields a single error
-        //                 let err_bytes: Result<Bytes, std::io::Error> = Err(std::io::Error::new(std::io::ErrorKind::Other, "stream creation failed"));
-        //                 stream::once(async { err_bytes }).right_stream()
-        //             }
-        //         }
-        //     });
-        //
-        // // The body can now be created from the boxed stream
-        // let body = Body::from_stream(Box::pin(final_stream));
-
-    }
 }
